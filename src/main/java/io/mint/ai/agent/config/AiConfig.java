@@ -16,7 +16,6 @@ public class AiConfig {
                                       ProjectReadTools projectReadTools,
                                       ProjectWriteTools projectWriteTools,
                                       @Value("${app.agent.skills-dir:./skills}") String skillsDir) {
-
         return chatClientBuilder
                 .defaultSystem(system -> system.text("""
                         你是企业级代码生成编排助手。

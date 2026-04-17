@@ -1,5 +1,7 @@
 package io.mint.ai.agent.tools;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -14,10 +16,47 @@ import java.util.stream.Collectors;
 @Component
 public class ProjectReadTools {
 
+    private static final Logger log = LoggerFactory.getLogger(ProjectReadTools.class);
+
     private static final int MAX_FILE_READ_CHARS = 50_000;
     private static final int MAX_SNIPPET_CHARS = 800;
     private static final int MAX_RESULTS = 12;
     private static final long MAX_SCAN_FILE_SIZE = 512 * 1024; // 512 KB
+
+    @Tool(description = """
+            List files and directories under a relative path inside the current workspace.
+            Use this to inspect project structure before reading or generating files.
+            Only files inside workspaceRoot are allowed.
+            """)
+    public String listDirectory(
+            @ToolParam(description = "Absolute path of the current task workspace root") String workspaceRoot,
+            @ToolParam(description = "Relative path inside workspaceRoot. Use '.' for root, 'backend', 'frontend/src/views', etc.") String path) {
+
+        Path root = normalizeWorkspaceRoot(workspaceRoot);
+        Path target = ".".equals(path) ? root : resolveInsideWorkspace(root, path);
+
+        log.info("[tool:listDirectory] workspaceRoot={}, path={}", workspaceRoot, path);
+
+        if (!Files.exists(target)) {
+            return "Directory not found: " + target;
+        }
+        if (!Files.isDirectory(target)) {
+            return "Target is not a directory: " + target;
+        }
+
+        try {
+            return Files.list(target)
+                    .sorted(Comparator.comparing(p -> p.getFileName().toString()))
+                    .map(p -> {
+                        String type = Files.isDirectory(p) ? "DIR " : "FILE";
+                        String rel = root.relativize(p).toString().replace('\\', '/');
+                        return type + " " + rel;
+                    })
+                    .collect(Collectors.joining("\n"));
+        } catch (IOException e) {
+            return "List directory failed: " + e.getMessage();
+        }
+    }
 
     @Tool(description = """
             Search files under the given workspace for code or config related to a keyword.
@@ -28,7 +67,7 @@ public class ProjectReadTools {
     public String searchProjectFiles(
             @ToolParam(description = "Absolute path of the current task workspace root") String workspaceRoot,
             @ToolParam(description = "Keyword, module name, class name, endpoint, or feature to search for") String keyword) {
-
+        log.info("[tool:searchProjectFiles] workspaceRoot={}, keyword={}", workspaceRoot, keyword);
         Path root = normalizeWorkspaceRoot(workspaceRoot);
         String query = safeLower(keyword);
         if (query.isBlank()) {
@@ -101,7 +140,7 @@ public class ProjectReadTools {
     public String readProjectFile(
             @ToolParam(description = "Absolute path of the current task workspace root") String workspaceRoot,
             @ToolParam(description = "Path relative to workspaceRoot, such as backend/src/main/java/... or frontend/src/views/...") String path) {
-
+        log.info("[tool:readProjectFile] workspaceRoot={}, path={}", workspaceRoot, path);
         Path root = normalizeWorkspaceRoot(workspaceRoot);
         Path target = resolveInsideWorkspace(root, path);
 

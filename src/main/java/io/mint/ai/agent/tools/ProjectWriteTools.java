@@ -1,5 +1,7 @@
 package io.mint.ai.agent.tools;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
 import org.springframework.stereotype.Component;
@@ -14,6 +16,8 @@ import java.util.Set;
 
 @Component
 public class ProjectWriteTools {
+
+    private static final Logger log = LoggerFactory.getLogger(ProjectWriteTools.class);
 
     private static final Set<String> DEFAULT_PROTECTED_NAMES = Set.of(
             "pom.xml",
@@ -32,6 +36,7 @@ public class ProjectWriteTools {
             @ToolParam(description = "Absolute path of the current task workspace root") String workspaceRoot,
             @ToolParam(description = "Path relative to workspaceRoot for the file to write") String path,
             @ToolParam(description = "Complete file content to write") String content) {
+        log.info("[tool:writeProjectFile] workspaceRoot={}, path={}", workspaceRoot, path);
 
         Path root = normalizeWorkspaceRoot(workspaceRoot);
         Path target = resolveInsideWorkspace(root, path);
@@ -62,7 +67,7 @@ public class ProjectWriteTools {
             @ToolParam(description = "Absolute path of the current task workspace root") String workspaceRoot,
             @ToolParam(description = "Path relative to workspaceRoot for the file to patch") String path,
             @ToolParam(description = "Patch text in SEARCH/REPLACE format, or raw text to append") String patch) {
-
+        log.info("[tool:patchProjectFile] workspaceRoot={}, path={}", workspaceRoot, path);
         Path root = normalizeWorkspaceRoot(workspaceRoot);
         Path target = resolveInsideWorkspace(root, path);
         ensureWritableTarget(target);

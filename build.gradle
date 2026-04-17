@@ -26,6 +26,7 @@ dependencies {
     implementation 'org.springframework.ai:spring-ai-starter-model-openai'
     implementation platform("org.springaicommunity:spring-ai-agent-utils-bom:0.7.0")
     implementation 'org.springaicommunity:spring-ai-agent-utils'
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
 //    implementation 'org.springframework.ai:spring-ai-starter-model-ollama'
 //    implementation 'org.springframework.ai:spring-ai-starter-vector-store-elasticsearch'
 //    implementation 'org.springframework.ai:spring-ai-tika-document-reader'

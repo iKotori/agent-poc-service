@@ -8,6 +8,8 @@ public record FieldSpec(
         String formType,
         boolean queryable,
         boolean listable,
+        boolean sortable,
+        boolean detailVisible,
         String comment
 ) {
 }
