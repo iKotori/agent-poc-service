@@ -14,10 +14,23 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
+
 @Service
 public class GenerateOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(GenerateOrchestrator.class);
+    private static final List<String> STAGES = List.of(
+            "requirement-analysis",
+            "sql-generation",
+            "api-design",
+            "backend-generation",
+            "frontend-generation",
+            "backend-build",
+            "frontend-build"
+    );
 
     private final ChatClient agentChatClient;
     private final BuildTools buildTools;
@@ -35,57 +48,117 @@ public class GenerateOrchestrator {
     }
 
     public GenerateResult generate(GenerateRequest request) {
+        return doGenerate(request, new OrchestratorEventListener() {}, () -> false);
+    }
+
+    public GenerateResult generateStreaming(GenerateRequest request,
+                                            OrchestratorEventListener listener,
+                                            BooleanSupplier isCancelled) {
+        return doGenerate(request, listener, isCancelled);
+    }
+
+    private GenerateResult doGenerate(GenerateRequest request,
+                                      OrchestratorEventListener listener,
+                                      BooleanSupplier isCancelled) {
         String workspaceRoot = request.workspaceRoot();
         Path artifactDir = prepareArtifactDir(workspaceRoot);
 
+        listener.onRunStarted(workspaceRoot, STAGES);
         log.info("[generate] START, workspaceRoot={}", workspaceRoot);
 
-        RequirementSpec requirementSpec = runStage(
+        RequirementSpec requirementSpec = executeStage(
                 "requirement-analysis",
-                new RequirementStageInput(request.userRequirement(), workspaceRoot),
-                RequirementSpec.class,
-                artifactDir
+                1,
+                listener,
+                isCancelled,
+                () -> runStage(
+                        "requirement-analysis",
+                        new RequirementStageInput(request.userRequirement(), workspaceRoot),
+                        RequirementSpec.class,
+                        artifactDir
+                )
         );
 
-        SqlSpec sqlSpec = runStage(
+        SqlSpec sqlSpec = executeStage(
                 "sql-generation",
-                new SqlStageInput(workspaceRoot, requirementSpec),
-                SqlSpec.class,
-                artifactDir
+                2,
+                listener,
+                isCancelled,
+                () -> runStage(
+                        "sql-generation",
+                        new SqlStageInput(workspaceRoot, requirementSpec),
+                        SqlSpec.class,
+                        artifactDir
+                )
         );
 
-        ApiSpec apiSpec = runStage(
+        ApiSpec apiSpec = executeStage(
                 "api-design",
-                new ApiStageInput(workspaceRoot, requirementSpec, sqlSpec),
-                ApiSpec.class,
-                artifactDir
+                3,
+                listener,
+                isCancelled,
+                () -> runStage(
+                        "api-design",
+                        new ApiStageInput(workspaceRoot, requirementSpec, sqlSpec),
+                        ApiSpec.class,
+                        artifactDir
+                )
         );
 
-        GenerationWriteSummary backendSummary = runStage(
+        GenerationWriteSummary backendSummary = executeStage(
                 "backend-generation",
-                new BackendStageInput(workspaceRoot, requirementSpec, sqlSpec, apiSpec),
-                GenerationWriteSummary.class,
-                artifactDir
+                4,
+                listener,
+                isCancelled,
+                () -> runStage(
+                        "backend-generation",
+                        new BackendStageInput(workspaceRoot, requirementSpec, sqlSpec, apiSpec),
+                        GenerationWriteSummary.class,
+                        artifactDir
+                )
         );
 
-        GenerationWriteSummary frontendSummary = runStage(
+        GenerationWriteSummary frontendSummary = executeStage(
                 "frontend-generation",
-                new FrontendStageInput(workspaceRoot, requirementSpec, apiSpec),
-                GenerationWriteSummary.class,
-                artifactDir
+                5,
+                listener,
+                isCancelled,
+                () -> runStage(
+                        "frontend-generation",
+                        new FrontendStageInput(workspaceRoot, requirementSpec, apiSpec),
+                        GenerationWriteSummary.class,
+                        artifactDir
+                )
         );
 
+        ensureNotCancelled(isCancelled);
+        listener.onStageStarted("backend-build", 6, STAGES.size());
         log.info("[generate] backend build start");
-        String backendBuildLog = buildTools.runBackendBuild(workspaceRoot + "/backend");
+        long backendBuildStartedAt = System.currentTimeMillis();
+        String backendBuildLog = buildTools.runBackendBuild(
+                workspaceRoot + "/backend",
+                line -> listener.onBuildLog("backend", line),
+                isCancelled
+        );
         writeTextArtifact(artifactDir, "backend-build.log", backendBuildLog);
+        listener.onStageCompleted("backend-build", "backend-build.log", System.currentTimeMillis() - backendBuildStartedAt);
 
+        ensureNotCancelled(isCancelled);
+        listener.onStageStarted("frontend-build", 7, STAGES.size());
         log.info("[generate] frontend build start");
-        String frontendBuildLog = buildTools.runFrontendBuild(workspaceRoot + "/frontend");
+        long frontendBuildStartedAt = System.currentTimeMillis();
+        String frontendBuildLog = buildTools.runFrontendBuild(
+                workspaceRoot + "/frontend",
+                line -> listener.onBuildLog("frontend", line),
+                isCancelled
+        );
         writeTextArtifact(artifactDir, "frontend-build.log", frontendBuildLog);
+        listener.onStageCompleted("frontend-build", "frontend-build.log", System.currentTimeMillis() - frontendBuildStartedAt);
 
+        ensureNotCancelled(isCancelled);
         log.info("[generate] DONE");
 
-        return new GenerateResult(
+        GenerateResult result = new GenerateResult(
                 requirementSpec,
                 sqlSpec,
                 apiSpec,
@@ -94,6 +167,26 @@ public class GenerateOrchestrator {
                 backendBuildLog,
                 frontendBuildLog
         );
+        listener.onRunCompleted(result, artifactDir.toString());
+        return result;
+    }
+
+    private <T> T executeStage(String stageName,
+                               int stageIndex,
+                               OrchestratorEventListener listener,
+                               BooleanSupplier isCancelled,
+                               StageSupplier<T> supplier) {
+        ensureNotCancelled(isCancelled);
+        listener.onStageStarted(stageName, stageIndex, STAGES.size());
+        long startedAt = System.currentTimeMillis();
+        try {
+            T result = supplier.get();
+            listener.onStageCompleted(stageName, stageName + "-parsed.json", System.currentTimeMillis() - startedAt);
+            return result;
+        } catch (Exception ex) {
+            listener.onRunError(stageName, ex);
+            throw ex;
+        }
     }
 
     private <T> T runStage(String skillName, Object input, Class<T> outputType, Path artifactDir) {
@@ -145,6 +238,12 @@ public class GenerateOrchestrator {
         } catch (Exception e) {
             log.error("[stage:{}] FAILED", skillName, e);
             throw new IllegalStateException("Stage failed: " + skillName, e);
+        }
+    }
+
+    private void ensureNotCancelled(BooleanSupplier isCancelled) {
+        if (isCancelled.getAsBoolean()) {
+            throw new CancellationException("Run cancelled");
         }
     }
 
@@ -206,4 +305,9 @@ public class GenerateOrchestrator {
     public record ApiStageInput(String workspaceRoot, RequirementSpec requirementSpec, SqlSpec sqlSpec) {}
     public record BackendStageInput(String workspaceRoot, RequirementSpec requirementSpec, SqlSpec sqlSpec, ApiSpec apiSpec) {}
     public record FrontendStageInput(String workspaceRoot, RequirementSpec requirementSpec, ApiSpec apiSpec) {}
+
+    @FunctionalInterface
+    private interface StageSupplier<T> {
+        T get();
+    }
 }

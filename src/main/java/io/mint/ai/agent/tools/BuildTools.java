@@ -13,6 +13,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 @Component
 public class BuildTools {
@@ -21,17 +23,25 @@ public class BuildTools {
     private static final int MAX_LOG_CHARS = 40_000;
 
     public String runBackendBuild(String backendRoot) {
+        return runBackendBuild(backendRoot, line -> {}, () -> false);
+    }
+
+    public String runBackendBuild(String backendRoot, Consumer<String> onLine, BooleanSupplier isCancelled) {
         Path root = validateRoot(backendRoot);
 
         List<String> command = resolveBackendCommand(root);
-        return runCommand(root, command, "backend-build");
+        return runCommand(root, command, "backend-build", onLine, isCancelled);
     }
 
     public String runFrontendBuild(String frontendRoot) {
+        return runFrontendBuild(frontendRoot, line -> {}, () -> false);
+    }
+
+    public String runFrontendBuild(String frontendRoot, Consumer<String> onLine, BooleanSupplier isCancelled) {
         Path root = validateRoot(frontendRoot);
 
         List<String> command = resolveFrontendCommand(root);
-        return runCommand(root, command, "frontend-build");
+        return runCommand(root, command, "frontend-build", onLine, isCancelled);
     }
 
     private Path validateRoot(String rootPath) {
@@ -70,7 +80,11 @@ public class BuildTools {
         return List.of(npm, "run", "build");
     }
 
-    private String runCommand(Path workingDir, List<String> command, String tag) {
+    private String runCommand(Path workingDir,
+                              List<String> command,
+                              String tag,
+                              Consumer<String> onLine,
+                              BooleanSupplier isCancelled) {
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(workingDir.toFile());
         pb.redirectErrorStream(true);
@@ -88,8 +102,15 @@ public class BuildTools {
 
                 String line;
                 while ((line = reader.readLine()) != null) {
+                    onLine.accept(line);
                     if (log.length() < MAX_LOG_CHARS) {
                         log.append(line).append('\n');
+                    }
+
+                    if (isCancelled.getAsBoolean()) {
+                        process.destroyForcibly();
+                        log.append("\nProcess cancelled by user.");
+                        return log.toString();
                     }
                 }
             }
